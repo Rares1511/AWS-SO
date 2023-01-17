@@ -21,7 +21,6 @@ http_parser request_parser;
 int on_path ( http_parser *parser, const char *buf, size_t len ) {
 	assert ( parser == &request_parser );
 	memcpy ( request_path, buf, len );
-	memcpy ( parser->data, buf, len );
 	return 0;
 }
 
@@ -140,14 +139,14 @@ enum connection_state receive_message ( struct connection *conn ) {
 	char *abuffer = malloc ( 64 );
 
 	rc = get_peer_address ( conn->sock_fd, abuffer, 64 );
+	free ( abuffer );
 	if ( rc < 0 ) {
 		ERR ( "get_peer_address" );
 		return remove_connection ( conn );
 	}
 
 	bytes_recv = recv ( conn->sock_fd, conn->recv_buffer + conn->recv_len, BUFSIZ, 0 );
-	if ( bytes_recv < 0 ) return remove_connection ( conn );
-	if ( bytes_recv == 0 ) return remove_connection ( conn );
+	if ( bytes_recv <= 0 ) return remove_connection ( conn );
 
 	printf ( "--\n%s--\n", conn->recv_buffer );
 
@@ -179,11 +178,12 @@ void client_request ( struct connection *conn ) {
 	conn_state = receive_message ( conn );
 	if ( conn_state == CONNECTION_CLOSED ) return;
 
+	if ( strstr ( conn->recv_buffer, "\r\n\r\n" ) == NULL ) return;
+
 	http_parser_init ( &request_parser, HTTP_REQUEST );
 	request_parser.data = malloc ( sizeof ( char* ) ); 
 	int bytes_parsed = http_parser_execute ( &request_parser, &settings, 
 	                   conn->recv_buffer, conn->recv_len );
-	printf ( "%s\n", request_parser.data );
 	if ( bytes_parsed != 0 )
 		sprintf ( conn->path, "%s%s", AWS_DOCUMENT_ROOT, request_path + 1 );
 	
@@ -201,6 +201,7 @@ enum connection_state send_message ( struct connection *conn ) {
 	char *abuffer = malloc ( 64 );
 
 	rc = get_peer_address ( conn->sock_fd, abuffer, 64 );
+	free ( abuffer );
 	if ( rc < 0 ) {
 		ERR ( "get_peer_address" );
 		return remove_connection ( conn );
@@ -210,11 +211,12 @@ enum connection_state send_message ( struct connection *conn ) {
 		bytes_sent = send ( conn->sock_fd, conn->send_buffer, conn->send_len, 0 );
 		if ( bytes_sent <= 0 ) return remove_connection ( conn );
 		conn->send_len -= bytes_sent;
+		strncpy ( conn->send_buffer, conn->send_buffer + bytes_sent, conn->send_len );
 		return 0;
 	}
 
 	if ( conn->fd != -1 ) {
-		if ( strstr ( conn->path, "static" ) ) {
+		if ( strstr ( request_path, "static" ) ) {
 			if ( conn->file_size > 0 ) {
 				int bytes_sent = sendfile ( conn->sock_fd, conn->fd, NULL, conn->file_size );
 				conn->file_size -= bytes_sent;
@@ -223,7 +225,7 @@ enum connection_state send_message ( struct connection *conn ) {
 			else 
 				return remove_connection ( conn );
 		}
-		else if ( strstr ( conn->path, "dynamic" ) ) {
+		else if ( strstr ( request_path, "dynamic" ) ) {
 			// sall
 		}
 	}
@@ -246,7 +248,7 @@ int main ( void ) {
     while ( 5 > 4 ) {
         struct epoll_event *event = malloc ( EPOLL_EVENT_SIZE );
 
-        rc = epoll_wait ( epoll_fd, event, 1, TIMEOUT );
+        rc = epoll_wait ( epoll_fd, event, 1, -1 );
         DIE ( rc < 0, "epoll_wait" );
         printf ( "received event\n" );
 
